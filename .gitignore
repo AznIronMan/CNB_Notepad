@@ -170,3 +170,17 @@ cnb_notepad.lnk
 CNB Notepad.app/
 CNB Notepad.lnk
 CNB Notepad.desktop
+.DS_Store
+Thumbs.db
+# Additional system-specific files
+**/Thumbs.db
+**/Desktop.ini
+**/.DS_Store
+**/.directory
+**/.Trash-*
+**/.Spotlight-V100
+**/.TemporaryItems
+**/.fseventsd
+**/.DocumentRevisions-V100
+**/.VolumeIcon.icns
+**/.com.apple.timemachine.donotpresent
