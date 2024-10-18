@@ -163,6 +163,7 @@ cython_debug/
 settings*.json
 .venv*/
 .private/
+.private/*
 cnb_notepad.bat
 cnb_notepad.sh
 cnb_notepad.vbs
@@ -172,6 +173,8 @@ CNB Notepad.lnk
 CNB Notepad.desktop
 .DS_Store
 Thumbs.db
+reset.sh
+*.settings
 # Additional system-specific files
 **/Thumbs.db
 **/Desktop.ini

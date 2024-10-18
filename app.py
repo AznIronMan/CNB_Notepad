@@ -1,7 +1,11 @@
-import json
 import os
 import sys
 import socket
+import sqlite3
+import re
+from datetime import datetime
+import logging
+import argparse
 
 from functools import partial
 from typing import Dict, Optional, List
@@ -16,7 +20,6 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QMainWindow,
     QPlainTextEdit,
     QTabWidget,
     QMessageBox,
@@ -28,9 +31,25 @@ from PyQt6.QtWidgets import (
     QLabel,
     QStatusBar,
     QMenu,
+    QMainWindow,
+    QDialog,
+    QTextBrowser,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QActionGroup
+
+
+def setup_logging(enable_debug):
+    if enable_debug:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+        )
+    else:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+        )
 
 
 class FindReplaceDialog(QWidget):
@@ -63,8 +82,59 @@ class FindReplaceDialog(QWidget):
         self.replace_all_button.hide()
 
 
+class AboutDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("About CNB Notepad")
+        self.setFixedSize(400, 550)
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        version = parent.settings.get("version", "")
+        date = parent.settings.get("date", "")
+
+        about_text = parent.get_resource("about_text")
+        about_text = about_text.format(version=version, date=date)
+
+        self.text_browser = QTextBrowser()
+        self.text_browser.setHtml(about_text)
+        self.text_browser.setOpenExternalLinks(True)
+        self.text_browser.setStyleSheet(
+            """
+            QTextBrowser {
+                background-color: #2b2b2b;
+                color: white;
+                border: none;
+            }
+        """
+        )
+        self.text_browser.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse
+        )
+        layout.addWidget(self.text_browser)
+        self.ok_button = QPushButton("OK")
+        self.ok_button.clicked.connect(self.accept)
+        layout.addWidget(
+            self.ok_button, alignment=Qt.AlignmentFlag.AlignHCenter
+        )
+        self.ok_button.setDefault(True)
+        self.ok_button.setFocus()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
+            self.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def mousePressEvent(self, event):
+        if not self.text_browser.underMouse():
+            self.accept()
+        else:
+            super().mousePressEvent(event)
+
+
 class Notepad(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, enable_debug=False) -> None:
         """Initialize the Notepad application."""
         super().__init__()
         self.setWindowTitle("CNB Notepad")
@@ -74,8 +144,13 @@ class Notepad(QMainWindow):
         self.setWindowIcon(QIcon(icon_path))
 
         hostname = socket.gethostname().split(".")[0]
-        self.settings_file = f"settings-{hostname}.json"
+        self.settings_file = f"{hostname}.settings"
         self.settings = self.load_settings()
+        self.debug_enabled = self.settings.get("debug_enabled", False)
+        if enable_debug:
+            self.debug_enabled = True
+        setup_logging(self.debug_enabled)
+
         self.max_recent_files = max(
             0, min(int(self.settings.get("max_recent_files", 5)), 10)
         )
@@ -92,7 +167,6 @@ class Notepad(QMainWindow):
         self.reopen_last_enabled: bool = self.settings.get("reopen_last", True)
         self.recent_files: List[str] = self.settings.get("recent_files", [])
         self.max_recent_files = int(self.settings.get("max_recent_files", 5))
-        self.dark_mode: bool = self.settings.get("dark_mode", True)
 
         self.statusBar = QStatusBar()
         self.setStatusBar(self.statusBar)
@@ -139,6 +213,56 @@ class Notepad(QMainWindow):
                 QKeySequence.StandardKey.Close,
             )
         )
+
+        self.update_menu_state()
+
+        self.scan_readme_and_update_settings()
+
+    def scan_readme_and_update_settings(self):
+        """Scan README.md for version and date, update settings."""
+        version = ""
+        date = ""
+
+        try:
+            with open("README.md", "r") as readme_file:
+                content = readme_file.read()
+                version_match = re.search(
+                    r"- \*\*Version\*\*:\s*(.*)", content
+                )
+                date_match = re.search(r"- \*\*Date\*\*:\s*(.*)", content)
+
+                if version_match:
+                    version = version_match.group(1).strip()
+                    logging.debug(f"Found version: {version}")
+                else:
+                    logging.warning("Version not found in README.md")
+
+                if date_match:
+                    date = date_match.group(1).strip()
+                    logging.debug(f"Found date: {date}")
+                else:
+                    logging.warning("Date not found in README.md")
+        except FileNotFoundError:
+            logging.error("README.md file not found")
+            if not self.settings.get("version") and not self.settings.get(
+                "date"
+            ):
+                QMessageBox.warning(
+                    self,
+                    "Warning",
+                    "README.md is missing. It is needed for this application.",
+                )
+
+        if version or not self.settings.get("version"):
+            self.settings["version"] = version
+            logging.debug(f"Setting version to: {version}")
+        if date or not self.settings.get("date"):
+            self.settings["date"] = date
+            logging.debug(f"Setting date to: {date}")
+
+        self.settings["last_checked"] = datetime.now().isoformat()
+        self.save_settings()
+        logging.debug("Settings saved")
 
     def create_menu(self) -> None:
         """Create the application menu with keyboard shortcuts."""
@@ -255,12 +379,6 @@ class Notepad(QMainWindow):
         reopen_last_action.setChecked(self.reopen_last_enabled)
         options_menu.addAction(reopen_last_action)
 
-        dark_mode_action = self.create_action(
-            "Dark Mode", self.toggle_theme, checkable=True
-        )
-        dark_mode_action.setChecked(self.dark_mode)
-        options_menu.addAction(dark_mode_action)
-
         recent_files_menu = options_menu.addMenu("Max Recent Files")
         self.recent_files_action_group = QActionGroup(self)
         self.recent_files_action_group.setExclusive(True)
@@ -276,27 +394,10 @@ class Notepad(QMainWindow):
 
         self.update_recent_files_menu()
 
-    def toggle_theme(self) -> None:
-        """Toggle between dark and light themes."""
-        self.dark_mode = not self.dark_mode
-        self.settings["dark_mode"] = self.dark_mode
-        self.save_settings()
-        self.set_theme()
-
-    def set_theme(self) -> None:
-        """Set the application theme (dark or light)."""
-        if self.dark_mode:
-            self.setStyleSheet(
-                """
-                QWidget { background-color: 
-                QPlainTextEdit { background-color: 
-                QMenuBar { background-color: 
-                QMenu { background-color: 
-                QMenu::item:selected { background-color: 
-            """
-            )
-        else:
-            self.setStyleSheet("")
+        help_menu = self.menuBar().addMenu("Help")
+        help_menu.addAction(
+            self.create_action("About CNB Notepad", self.show_about)
+        )
 
     def create_action(
         self,
@@ -357,18 +458,20 @@ class Notepad(QMainWindow):
         self.update_file_status()
         self.update_counts()
 
-    def save_file(self) -> None:
+    def save_file(self) -> bool:
         """Save the current file."""
         editor = self.tabs.currentWidget()
         if editor:
             file_path = self.last_file_path
             if not file_path:
-                self.save_file_as()
+                return self.save_file_as()
             else:
                 self.write_to_file(file_path, editor.toPlainText())
                 self.set_tab_saved(self.tabs.currentIndex())
+                return True
+        return False
 
-    def save_file_as(self) -> None:
+    def save_file_as(self) -> bool:
         """Save the current file with a new name."""
         editor = self.tabs.currentWidget()
         if editor:
@@ -389,6 +492,8 @@ class Notepad(QMainWindow):
                 self.add_recent_file(file_path)
                 self.save_settings()
                 self.set_tab_saved(self.tabs.currentIndex())
+                return True
+        return False
 
     def write_to_file(self, file_path: str, content: str) -> None:
         """Write the given content to the specified file."""
@@ -429,16 +534,26 @@ class Notepad(QMainWindow):
         """Check if the document needs saving and ask the user if necessary."""
         editor = self.tabs.widget(index)
         if editor and editor.document().isModified():
+            tab_name = self.tabs.tabText(index)
+            is_untitled = tab_name == "Untitled" or tab_name == "•Untitled"
+
             ret = QMessageBox.warning(
                 self,
                 "Application",
-                "The document has been modified.\nDo you want to save your changes?",
+                (
+                    f"The document '{tab_name}' has been modified."
+                    "\nDo you want to save your changes?"
+                ),
                 QMessageBox.StandardButton.Save
                 | QMessageBox.StandardButton.Discard
                 | QMessageBox.StandardButton.Cancel,
             )
+
             if ret == QMessageBox.StandardButton.Save:
-                return self.save_file()
+                if is_untitled:
+                    return self.save_file_as()
+                else:
+                    return self.save_file()
             elif ret == QMessageBox.StandardButton.Cancel:
                 return False
         return True
@@ -467,6 +582,13 @@ class Notepad(QMainWindow):
         """Select all text in the current editor."""
         self.get_current_editor().selectAll()
 
+    def show_find(self) -> None:
+        """Show the find dialog."""
+        self.find_replace_dialog.show()
+        self.find_replace_dialog.replace_input.hide()
+        self.find_replace_dialog.replace_button.hide()
+        self.find_replace_dialog.replace_all_button.hide()
+
     def show_find_replace(self) -> None:
         """Show the find and replace dialog."""
         self.find_replace_dialog.show()
@@ -480,9 +602,9 @@ class Notepad(QMainWindow):
         if editor:
             text = self.find_replace_dialog.find_input.text()
             if editor.find(text):
-                self.statusBar().showMessage(f"Found '{text}'", 2000)
+                self.statusBar.showMessage(f"Found '{text}'", 2000)
             else:
-                self.statusBar().showMessage(f"'{text}' not found", 2000)
+                self.statusBar.showMessage(f"'{text}' not found", 2000)
 
     def replace_text(self) -> None:
         """Replace the found text with the specified text."""
@@ -493,7 +615,7 @@ class Notepad(QMainWindow):
             cursor = editor.textCursor()
             if cursor.hasSelection() and cursor.selectedText() == find_text:
                 cursor.insertText(replace_text)
-                self.statusBar().showMessage(
+                self.statusBar.showMessage(
                     f"Replaced '{find_text}' with '{replace_text}'", 2000
                 )
             else:
@@ -511,13 +633,13 @@ class Notepad(QMainWindow):
             ), content.count(find_text)
             if count > 0:
                 editor.setPlainText(new_content)
-                self.statusBar().showMessage(
+                self.statusBar.showMessage(
                     f"Replaced {count} occurrence(s) of '{find_text}' "
                     f"with '{replace_text}'",
                     2000,
                 )
             else:
-                self.statusBar().showMessage(f"'{find_text}' not found", 2000)
+                self.statusBar.showMessage(f"'{find_text}' not found", 2000)
 
     def toggle_word_wrap(self) -> None:
         """Toggle word wrap for the current editor."""
@@ -529,35 +651,80 @@ class Notepad(QMainWindow):
                 if self.word_wrap_enabled
                 else QPlainTextEdit.LineWrapMode.NoWrap
             )
-        self.settings["word_wrap"] = self.word_wrap_enabled
+        self.settings["word_wrap"] = str(self.word_wrap_enabled)
         self.save_settings()
 
     def toggle_reopen_last(self) -> None:
         """Toggle the option to reopen the last file on startup."""
         self.reopen_last_enabled = not self.reopen_last_enabled
-        self.settings["reopen_last"] = self.reopen_last_enabled
+        self.settings["reopen_last"] = str(self.reopen_last_enabled)
         self.save_settings()
 
     def load_settings(self) -> Dict:
-        """Load settings from the settings file."""
-        if os.path.exists(self.settings_file):
-            with open(self.settings_file, "r") as file:
-                settings = json.load(file)
-                return settings
-        return {
-            "last_session": None,
-            "word_wrap": False,
-            "reopen_last": True,
-            "recent_files": [],
-            "max_recent_files": 5,
-            "dark_mode": True,
-        }
+        """Load settings from the SQLite database."""
+        if not os.path.exists(self.settings_file):
+            self.create_settings_db()
+
+        settings = {}
+        conn = sqlite3.connect(self.settings_file)
+        cursor = conn.cursor()
+        cursor.execute("SELECT key, value FROM settings")
+        for key, value in cursor.fetchall():
+            if key == "recent_files":
+                settings[key] = value.split(",") if value else []
+            elif key in ("word_wrap", "reopen_last", "debug_enabled"):
+                settings[key] = value == "True"
+            elif key == "max_recent_files":
+                settings[key] = int(value)
+            else:
+                settings[key] = value
+        conn.close()
+        return settings
 
     def save_settings(self) -> None:
-        """Save current settings to the settings file."""
-        self.settings["max_recent_files"] = self.max_recent_files
-        with open(self.settings_file, "w") as file:
-            json.dump(self.settings, file, indent=4)
+        """Save current settings to the SQLite database."""
+        conn = sqlite3.connect(self.settings_file)
+        cursor = conn.cursor()
+        for key, value in self.settings.items():
+            if key == "recent_files":
+                value = ",".join(value)
+            cursor.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (key, str(value)),
+            )
+        conn.commit()
+        conn.close()
+
+    def create_settings_db(self) -> None:
+        """Create the SQLite database and table for settings."""
+        conn = sqlite3.connect(self.settings_file)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """
+        )
+        default_settings = {
+            "last_session": None,
+            "word_wrap": "False",
+            "reopen_last": "True",
+            "recent_files": "",
+            "max_recent_files": "5",
+            "version": "",
+            "date": "",
+            "last_checked": "",
+            "debug_enabled": "False",
+        }
+        for key, value in default_settings.items():
+            cursor.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+        conn.commit()
+        conn.close()
 
     def update_title(self) -> None:
         """Update the window title based on the current tab."""
@@ -634,6 +801,7 @@ class Notepad(QMainWindow):
         self.recent_files.insert(0, file_path)
         self.recent_files = self.recent_files[: self.max_recent_files]
         self.settings["recent_files"] = self.recent_files
+        self.save_settings()
         self.update_recent_files_menu()
 
     def update_recent_files_menu(self) -> None:
@@ -680,12 +848,12 @@ class Notepad(QMainWindow):
     def set_max_recent_files(self, value: int) -> None:
         """Set the maximum number of recent files to remember."""
         self.max_recent_files = max(0, min(int(value), 10))
-        self.settings["max_recent_files"] = self.max_recent_files
+        self.settings["max_recent_files"] = str(self.max_recent_files)
         if self.max_recent_files > 0:
             self.recent_files = self.recent_files[: self.max_recent_files]
         else:
             self.recent_files = []
-        self.settings["recent_files"] = self.recent_files
+        self.settings["recent_files"] = ",".join(self.recent_files)
         self.save_settings()
         self.update_recent_files_menu()
 
@@ -759,48 +927,54 @@ class Notepad(QMainWindow):
         if editor:
             editor.redo()
 
-    def show_find(self) -> None:
-        """Show the find dialog."""
-        self.find_replace_dialog.show()
-        self.find_replace_dialog.replace_input.hide()
-        self.find_replace_dialog.replace_button.hide()
-        self.find_replace_dialog.replace_all_button.hide()
-
-    def update_menu_state(self) -> None:
-        """Update the state of menu items based on current conditions."""
+    def update_menu_state(self):
+        """Update the state of menu items based on the current context."""
+        editor = self.get_current_editor()
         has_tabs = self.tabs.count() > 0
-        current_tab = self.get_current_editor()
 
-        self.save_action.setEnabled(has_tabs)
+        self.save_action.setEnabled(
+            has_tabs and editor and editor.document().isModified()
+        )
         self.save_as_action.setEnabled(has_tabs)
-
         self.close_tab_action.setEnabled(has_tabs)
         self.close_all_action.setEnabled(has_tabs)
 
-        if self.edit_menu:
-            for action in self.edit_menu.actions():
-                action.setEnabled(has_tabs)
+        has_selection = (
+            editor and editor.textCursor().hasSelection()
+            if has_tabs
+            else False
+        )
+        self.edit_menu.actions()[0].setEnabled(
+            has_tabs and editor and editor.document().isUndoAvailable()
+        )
+        self.edit_menu.actions()[1].setEnabled(
+            has_tabs and editor and editor.document().isRedoAvailable()
+        )
+        self.edit_menu.actions()[3].setEnabled(has_selection)
+        self.edit_menu.actions()[4].setEnabled(has_selection)
+        self.edit_menu.actions()[5].setEnabled(has_tabs)
+        self.edit_menu.actions()[6].setEnabled(
+            has_tabs and editor and not editor.document().isEmpty()
+        )
+        self.edit_menu.actions()[8].setEnabled(has_tabs)
+        self.edit_menu.actions()[9].setEnabled(has_tabs)
 
-            if current_tab:
-                undo_action = (
-                    self.edit_menu.actions()[0]
-                    if self.edit_menu.actions()
-                    else None
-                )
-                redo_action = (
-                    self.edit_menu.actions()[1]
-                    if len(self.edit_menu.actions()) > 1
-                    else None
-                )
+        self.recent_menu_action.setEnabled(
+            bool(self.recent_files) and self.max_recent_files > 0
+        )
 
-                if undo_action:
-                    undo_action.setEnabled(
-                        current_tab.document().isUndoAvailable()
-                    )
-                if redo_action:
-                    redo_action.setEnabled(
-                        current_tab.document().isRedoAvailable()
-                    )
+    def show_about(self) -> None:
+        """Show the About dialog."""
+        about_dialog = AboutDialog(self)
+        about_dialog.exec()
+
+    def get_resource(self, key):
+        conn = sqlite3.connect("CNB_Notepad.resources")
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM resources WHERE key = ?", (key,))
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else None
 
 
 def resource_path(relative_path):
@@ -810,6 +984,15 @@ def resource_path(relative_path):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="CNB Notepad")
+    parser.add_argument(
+        "--enabledebug", action="store_true", help="Enable debug mode"
+    )
+    parser.add_argument(
+        "--disabledebug", action="store_true", help="Disable debug mode"
+    )
+    args = parser.parse_args()
+
     app = QApplication(sys.argv)
 
     icon_filename = "app.ico" if sys.platform == "win32" else "app.icns"
@@ -832,6 +1015,19 @@ if __name__ == "__main__":
     )
     QApplication.setWindowIcon(app_icon)
 
-    notepad = Notepad()
+    notepad = Notepad(enable_debug=args.enabledebug)
+
+    if args.enabledebug:
+        notepad.debug_enabled = True
+        notepad.settings["debug_enabled"] = "True"
+        notepad.save_settings()
+    elif args.disabledebug:
+        notepad.debug_enabled = False
+        notepad.settings["debug_enabled"] = "False"
+        notepad.save_settings()
+
+    setup_logging(notepad.debug_enabled)
+
     notepad.show()
+    logging.debug("Notepad initialized and shown")
     sys.exit(app.exec())

@@ -1,10 +1,10 @@
 # CNB Notepad by Clark & Burke, LLC
 
-- **Version**: v1.0.0
-- **Date**: 10.17.2024 @ 12:45 PM PST
+- **Version**: v1.0.1
+- **Date**: 10.18.2024 @ 2:30 PM PST
 - **Written by**: Geoff Clark of Clark & Burke, LLC
 
-- **README.md Last Updated**: 10.17.2024
+- **README.md Last Updated**: 10.18.2024
 
 CNB Notepad is a lightweight, cross-platform text editor built with Python and PyQt6. It provides essential text editing features and a user-friendly interface for both casual and power users. The notepad supports multiple tabs, dark mode, word wrap, and more.
 
@@ -76,16 +76,19 @@ The virtual environment is tied to your machine's hostname, allowing for differe
 - Drag and drop to open files
 - Word and character count display
 - File status indicator (Modified/Saved/Read-Only)
+- **New**: Improved database-driven settings for enhanced performance and reliability
+- **New**: About dialog added for version information
 
 ## Settings
 
-The app saves user preferences in a `settings-HOSTNAME.json` file. This includes:
+The app saves user preferences in a local database, tied to your machine's hostname. This includes:
 
 - Last opened file
 - Word wrap settings
 - Recent files list
 - Maximum number of recent files
 - Dark mode preference
+- Debug mode toggle (added in version 1.0.1)
 
 Settings are automatically loaded on startup and saved after each session.
 
@@ -99,11 +102,19 @@ Settings are automatically loaded on startup and saved after each session.
 
 ## Update Notes
 
+### Version 1.0.1 - 10.18.2024 @ 2:30 PM PST
+
+- **Improved**: Settings are now stored in a more efficient database format, replacing the JSON-based settings file for better performance and scalability.
+- **Added**: About dialog box showing version and release date information.
+- **Added**: Command-line arguments to enable or disable debug mode (`--enabledebug` / `--disabledebug`).
+- **Fixed**: Multiple minor bug fixes and performance improvements.
+- **Updated**: Refined the menu state logic for better handling of active/inactive options based on the current editing context.
+
 ### Version 1.0.0 - 10.17.2024 @ 12:30 PM PST
 
 - Initial release of CNB Notepad with core functionality.
 - Multi-tab support, dark mode, word wrap toggle, and file status indicators.
-- Settings are stored per machine using `settings-HOSTNAME.json` after first launch.
+- Settings are stored per machine using a local database after first launch.
 
 ## Author Information
 
