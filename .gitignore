@@ -187,3 +187,5 @@ reset.sh
 **/.DocumentRevisions-V100
 **/.VolumeIcon.icns
 **/.com.apple.timemachine.donotpresent
+test*.txt
+ToDo.md

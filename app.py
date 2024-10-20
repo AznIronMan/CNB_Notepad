@@ -16,6 +16,11 @@ from PyQt6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
     QKeySequence,
+    QTextCursor,  # Add this line
+    QTextCharFormat,
+    QColor,
+    QBrush,
+    QTextCharFormat,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -34,6 +39,8 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QDialog,
     QTextBrowser,
+    QSizePolicy,
+    QTextEdit,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QActionGroup
@@ -52,11 +59,11 @@ def setup_logging(enable_debug):
         )
 
 
-class FindReplaceDialog(QWidget):
+class FindReplaceDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
+        self.setWindowTitle("Find and Replace")
+        self.layout = QVBoxLayout(self)
 
         self.find_layout = QHBoxLayout()
         self.find_input = QLineEdit()
@@ -77,9 +84,15 @@ class FindReplaceDialog(QWidget):
         self.layout.addLayout(self.find_layout)
         self.layout.addLayout(self.replace_layout)
 
-        self.replace_input.hide()
-        self.replace_button.hide()
-        self.replace_all_button.hide()
+        self.setLayout(self.layout)
+
+    def closeEvent(self, event):
+        self.parent().clear_highlights()
+        super().closeEvent(event)
+
+    def hideEvent(self, event):
+        self.parent().clear_highlights()
+        super().hideEvent(event)
 
 
 class AboutDialog(QDialog):
@@ -140,6 +153,33 @@ class Notepad(QMainWindow):
         self.setWindowTitle("CNB Notepad")
         self.setGeometry(100, 100, 800, 600)
 
+        # Set focus policy for the main window
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        # Create a central widget and set it
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+
+        # Create a vertical layout for the central widget
+        self.main_layout = QVBoxLayout(self.central_widget)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create the placeholder label
+        self.placeholder = QLabel(
+            "No files open. Create a new file or open an existing one."
+        )
+        self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.placeholder.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )  # Add this line
+        self.placeholder.hide()
+        self.main_layout.addWidget(self.placeholder, stretch=1)
+
+        # Create the tab widget and add it to the layout
+        self.tabs = QTabWidget()
+        self.tabs.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.main_layout.addWidget(self.tabs, stretch=1)
+
         icon_path = os.path.join(os.path.dirname(__file__), "app.ico")
         self.setWindowIcon(QIcon(icon_path))
 
@@ -154,9 +194,6 @@ class Notepad(QMainWindow):
         self.max_recent_files = max(
             0, min(int(self.settings.get("max_recent_files", 5)), 10)
         )
-        self.tabs = QTabWidget()
-        self.tabs.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setCentralWidget(self.tabs)
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
@@ -192,31 +229,20 @@ class Notepad(QMainWindow):
         self.create_menu()
         self.update_menu_state()
 
-        if self.reopen_last_enabled and self.last_file_path:
-            self.open_file(self.last_file_path)
+        if self.reopen_last_enabled:
+            open_files = self.settings.get("open_files", "").split(",")
+            if open_files and open_files != [""]:
+                for file in open_files:
+                    if os.path.exists(file):
+                        self.open_file(file)
+            if self.tabs.count() == 0:
+                self.new_file()  # Create an initial tab if no files were reopened
+        else:
+            self.new_file()  # Create an initial tab
 
-        self.find_replace_dialog = FindReplaceDialog(self)
-        self.find_replace_dialog.find_button.clicked.connect(self.find_text)
-        self.find_replace_dialog.replace_button.clicked.connect(
-            self.replace_text
-        )
-        self.find_replace_dialog.replace_all_button.clicked.connect(
-            self.replace_all_text
-        )
+        self.tabs.currentWidget().setFocus()  # Set focus to the editor
 
-        self.setAcceptDrops(True)
-
-        self.addAction(
-            self.create_action(
-                "Close Tab",
-                self.close_current_tab,
-                QKeySequence.StandardKey.Close,
-            )
-        )
-
-        self.update_menu_state()
-
-        self.scan_readme_and_update_settings()
+        self.reset_ui_state()
 
     def scan_readme_and_update_settings(self):
         """Scan README.md for version and date, update settings."""
@@ -419,9 +445,12 @@ class Notepad(QMainWindow):
         editor = self.create_editor()
         self.tabs.addTab(editor, "Untitled")
         self.tabs.setCurrentWidget(editor)
+        editor.setFocus()  # Set focus to the new editor
         self.update_title()
         self.update_menu_state()
         self.update_counts()
+        self.reset_ui_state()
+        logging.debug("New file created")
 
     def open_file_dialog(self) -> None:
         """Open a file dialog to select a file to open."""
@@ -448,6 +477,7 @@ class Notepad(QMainWindow):
                 content = file.read()
                 editor = self.create_editor(content)
                 editor.setReadOnly(read_only)
+                editor.file_path = file_path  # Add this line
                 self.tabs.addTab(editor, os.path.basename(file_path))
                 self.tabs.setCurrentWidget(editor)
                 self.last_file_path = file_path
@@ -457,17 +487,27 @@ class Notepad(QMainWindow):
         self.update_title()
         self.update_file_status()
         self.update_counts()
+        self.reset_ui_state()
+        logging.debug(f"File opened: {file_path}")
 
     def save_file(self) -> bool:
         """Save the current file."""
         editor = self.tabs.currentWidget()
         if editor:
+            current_tab_index = self.tabs.currentIndex()
             file_path = self.last_file_path
-            if not file_path:
+            tab_name = self.tabs.tabText(current_tab_index)
+
+            # Check if the file is untitled or new
+            if (
+                not file_path
+                or tab_name.startswith("Untitled")
+                or tab_name.startswith("•Untitled")
+            ):
                 return self.save_file_as()
             else:
                 self.write_to_file(file_path, editor.toPlainText())
-                self.set_tab_saved(self.tabs.currentIndex())
+                self.set_tab_saved(current_tab_index)
                 return True
         return False
 
@@ -492,6 +532,10 @@ class Notepad(QMainWindow):
                 self.add_recent_file(file_path)
                 self.save_settings()
                 self.set_tab_saved(self.tabs.currentIndex())
+                self.tabs.setTabText(
+                    self.tabs.currentIndex(), os.path.basename(file_path)
+                )
+                self.update_title()
                 return True
         return False
 
@@ -514,7 +558,8 @@ class Notepad(QMainWindow):
             self.on_tab_changed()
             self.update_menu_state()
             if self.tabs.count() == 0:
-                self.update_counts()
+                self.reset_ui_state()
+            self.save_settings()  # Update the open files list
             return True
         return False
 
@@ -564,6 +609,8 @@ class Notepad(QMainWindow):
             if not self.maybe_save(i):
                 event.ignore()
                 return
+        self.settings["open_files"] = ",".join([self.tabs.widget(i).file_path for i in range(self.tabs.count()) if hasattr(self.tabs.widget(i), 'file_path')])
+        self.save_settings()  # Save the current session before closing
         event.accept()
 
     def cut_text(self) -> None:
@@ -584,42 +631,119 @@ class Notepad(QMainWindow):
 
     def show_find(self) -> None:
         """Show the find dialog."""
-        self.find_replace_dialog.show()
-        self.find_replace_dialog.replace_input.hide()
-        self.find_replace_dialog.replace_button.hide()
-        self.find_replace_dialog.replace_all_button.hide()
+        if self.get_current_editor():
+            self.clear_highlights()  # Clear highlights when opening the dialog
+            self.find_replace_dialog.replace_input.hide()
+            self.find_replace_dialog.replace_button.hide()
+            self.find_replace_dialog.replace_all_button.hide()
+            self.find_replace_dialog.setWindowTitle("Find")
+            self.find_replace_dialog.find_button.setText("Find")
+            self.find_replace_dialog.find_button.clicked.disconnect()
+            self.find_replace_dialog.find_button.clicked.connect(
+                self.find_text
+            )
+            self.find_replace_dialog.show()
+            self.ensure_editor_editable(self.get_current_editor())
+        else:
+            QMessageBox.warning(
+                self,
+                "No Document",
+                "There is no document open to search.",
+            )
 
     def show_find_replace(self) -> None:
         """Show the find and replace dialog."""
-        self.find_replace_dialog.show()
-        self.find_replace_dialog.replace_input.show()
-        self.find_replace_dialog.replace_button.show()
-        self.find_replace_dialog.replace_all_button.show()
+        if self.get_current_editor():
+            self.clear_highlights()  # Clear highlights when opening the dialog
+            self.find_replace_dialog.replace_input.show()
+            self.find_replace_dialog.replace_button.show()
+            self.find_replace_dialog.replace_all_button.show()
+            self.find_replace_dialog.setWindowTitle("Find and Replace")
+            self.find_replace_dialog.find_button.setText("Find")
+            self.find_replace_dialog.find_button.clicked.disconnect()
+            self.find_replace_dialog.find_button.clicked.connect(
+                self.find_text
+            )
+            self.find_replace_dialog.show()
+            self.ensure_editor_editable(self.get_current_editor())
+        else:
+            QMessageBox.warning(
+                self, "No Document", "There is no document open to search."
+            )
 
     def find_text(self) -> None:
         """Find the specified text in the current editor."""
         editor = self.get_current_editor()
         if editor:
             text = self.find_replace_dialog.find_input.text()
-            if editor.find(text):
-                self.statusBar.showMessage(f"Found '{text}'", 2000)
+
+            # Clear previous highlights
+            self.clear_highlights()
+
+            # Highlight all occurrences using Extra Selections
+            cursor = editor.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            self.highlights = []
+            while True:
+                cursor = editor.document().find(text, cursor)
+                if cursor.isNull():
+                    break
+                selection = QTextEdit.ExtraSelection()
+                selection.cursor = QTextCursor(cursor)
+                selection.format = self.highlight_format
+                self.highlights.append(selection)
+
+            if self.highlights:
+                # Set the extra selections on the editor
+                editor.setExtraSelections(self.highlights)
+                # Select the first occurrence
+                self.current_highlight_index = 0
+                editor.setTextCursor(self.highlights[0].cursor)
+                msg = f"Found {len(self.highlights)} occurrence(s) of '{text}'"
+                self.statusBar.showMessage(msg, 2000)
+
+                # Change Find button text to "Find Next"
+                self.find_replace_dialog.find_button.setText("Find Next")
+                self.find_replace_dialog.find_button.clicked.disconnect()
+                self.find_replace_dialog.find_button.clicked.connect(
+                    self.find_next
+                )
             else:
                 self.statusBar.showMessage(f"'{text}' not found", 2000)
+                self.current_highlight_index = -1
+
+            # Ensure the editor is editable and focused
+            self.ensure_editor_editable(editor)
+
+    def find_next(self) -> None:
+        """Find the next occurrence of the specified text."""
+        editor = self.get_current_editor()
+        if editor and self.highlights:
+            self.current_highlight_index += 1
+            if self.current_highlight_index >= len(self.highlights):
+                self.current_highlight_index = 0  # Wrap around
+            editor.setTextCursor(
+                self.highlights[self.current_highlight_index].cursor
+            )
+            msg = f"Found next occurrence of '{self.find_replace_dialog.find_input.text()}'"
+            self.statusBar.showMessage(msg, 2000)
 
     def replace_text(self) -> None:
         """Replace the found text with the specified text."""
         editor = self.get_current_editor()
-        if editor:
+        if editor and self.highlights:
+            cursor = editor.textCursor()
             find_text = self.find_replace_dialog.find_input.text()
             replace_text = self.find_replace_dialog.replace_input.text()
-            cursor = editor.textCursor()
-            if cursor.hasSelection() and cursor.selectedText() == find_text:
+            if cursor.selectedText() == find_text:
                 cursor.insertText(replace_text)
                 self.statusBar.showMessage(
                     f"Replaced '{find_text}' with '{replace_text}'", 2000
                 )
-            else:
+                # After replacement, update highlights
                 self.find_text()
+            else:
+                self.find_next()
 
     def replace_all_text(self) -> None:
         """Replace all occurrences of the found text with the specified text."""
@@ -628,9 +752,9 @@ class Notepad(QMainWindow):
             find_text = self.find_replace_dialog.find_input.text()
             replace_text = self.find_replace_dialog.replace_input.text()
             content = editor.toPlainText()
-            new_content, count = content.replace(
-                find_text, replace_text
-            ), content.count(find_text)
+            new_content, count = re.subn(
+                re.escape(find_text), replace_text, content
+            )
             if count > 0:
                 editor.setPlainText(new_content)
                 self.statusBar.showMessage(
@@ -638,6 +762,8 @@ class Notepad(QMainWindow):
                     f"with '{replace_text}'",
                     2000,
                 )
+                # Clear highlights
+                self.clear_highlights()
             else:
                 self.statusBar.showMessage(f"'{find_text}' not found", 2000)
 
@@ -688,6 +814,13 @@ class Notepad(QMainWindow):
         for key, value in self.settings.items():
             if key == "recent_files":
                 value = ",".join(value)
+            elif key == "open_files":
+                open_files = []
+                for i in range(self.tabs.count()):
+                    editor = self.tabs.widget(i)
+                    if hasattr(editor, 'file_path'):
+                        open_files.append(editor.file_path)
+                value = ",".join(open_files)
             cursor.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                 (key, str(value)),
@@ -769,6 +902,7 @@ class Notepad(QMainWindow):
     def create_editor(self, content: str = "") -> QPlainTextEdit:
         """Create a new text editor widget."""
         editor = QPlainTextEdit(content)
+        editor.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         editor.setLineWrapMode(
             QPlainTextEdit.LineWrapMode.WidgetWidth
             if self.word_wrap_enabled
@@ -976,6 +1110,51 @@ class Notepad(QMainWindow):
         conn.close()
         return result[0] if result else None
 
+    def reset_ui_state(self):
+        """Reset the UI state to resolve any focus or layout issues."""
+        if self.tabs.count() == 0:
+            self.tabs.hide()
+            self.placeholder.show()
+        else:
+            self.tabs.show()
+            self.placeholder.hide()
+
+        self.central_widget.layout().update()  # Add this line to force layout update
+        self.central_widget.setFocus()
+        current_editor = self.get_current_editor()
+        if current_editor:
+            current_editor.setFocus()
+        else:
+            self.menuBar().setFocus()
+
+        # Force a redraw of the main window
+        self.update()
+        logging.debug(f"UI state reset. Tab count: {self.tabs.count()}")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.reset_ui_state()
+        logging.debug("Window shown")
+
+    def clear_highlights(self):
+        """Clear all highlights in the current editor."""
+        editor = self.get_current_editor()
+        if editor:
+            self.highlights = []
+            self.current_highlight_index = -1
+            editor.setExtraSelections([])
+
+    def ensure_editor_editable(self, editor):
+        """Ensure that the editor is editable and focused."""
+        editor.setReadOnly(False)
+        editor.setFocus()
+        cursor = editor.textCursor()
+        cursor.clearSelection()
+        editor.setTextCursor(cursor)
+
+        # Force update of the editor
+        editor.repaint()
+
 
 def resource_path(relative_path):
     if hasattr(sys, "_MEIPASS"):
@@ -1028,6 +1207,8 @@ if __name__ == "__main__":
 
     setup_logging(notepad.debug_enabled)
 
+    notepad.reset_ui_state()  # Add this line
     notepad.show()
     logging.debug("Notepad initialized and shown")
     sys.exit(app.exec())
+
